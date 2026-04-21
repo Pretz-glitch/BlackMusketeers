@@ -24,17 +24,25 @@ def classify_dress(image_path: str) -> dict:
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         prompt = """
-        Analyze this image of a dress/clothing item. 
+        Analyze this image of a clothing item.
         Extract the following information and output ONLY a JSON object:
         1. 'season': (e.g., Summer, Winter, Spring, Autumn, or All-season)
-        2. 'style': (e.g., Formal, Casual, Party, Workwear, etc.)
-        3. 'color': (dominant color(s) of the dress)
+        2. 'clothing_type': (must be exactly one of: Top, Bottom, Full, Footwear, Accessory)
+        3. 'style': (e.g., Formal, Casual, Party, Loungewear, Workwear, Athletic, etc.)
+        4. 'aesthetic': (e.g., Flashy, Minimalist, Vintage, Streetwear, Elegant)
+        5. 'color_theme': (e.g., Dark, Light, Vibrant, Pastel, Neutral)
+        6. 'color_hue': (e.g., Navy Blue, Crimson Red, Olive Green, Black, White)
+        7. 'fabric': (e.g., Cotton, Denim, Silk, Leather, Synthetics, Wool)
         
         Format the output purely as a valid JSON object like so:
         {
             "season": "Summer",
+            "clothing_type": "Top",
             "style": "Casual",
-            "color": "Red"
+            "aesthetic": "Minimalist",
+            "color_theme": "Light",
+            "color_hue": "White",
+            "fabric": "Cotton"
         }
         """
         
@@ -56,8 +64,12 @@ def classify_dress(image_path: str) -> dict:
         result = json.loads(raw_text)
         return {
             "season": result.get("season", "Unknown"),
+            "clothing_type": result.get("clothing_type", "Unknown"),
             "style": result.get("style", "Unknown"),
-            "color": result.get("color", "Unknown")
+            "aesthetic": result.get("aesthetic", "Unknown"),
+            "color_theme": result.get("color_theme", "Unknown"),
+            "color_hue": result.get("color_hue", "Unknown"),
+            "fabric": result.get("fabric", "Unknown")
         }
         
     except Exception as e:
@@ -65,7 +77,11 @@ def classify_dress(image_path: str) -> dict:
         # Return the error message inside the object so we can debug it
         return {
             "season": "Unknown",
+            "clothing_type": "Unknown",
             "style": "Unknown",
-            "color": "Unknown",
+            "aesthetic": "Unknown",
+            "color_theme": "Unknown",
+            "color_hue": "Unknown",
+            "fabric": "Unknown",
             "error_msg": str(e)
         }

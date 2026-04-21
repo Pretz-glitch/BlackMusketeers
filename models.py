@@ -7,9 +7,18 @@ class DressItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     filename: str
     image_path: str
+    
+    # Core categorization
+    clothing_type: str  # top, bottom, full, footwear, accessory
     season: str
-    style: str
-    color: str
+    style: str          # formal, casual, party, athletic, etc.
+    
+    # Aesthetic & Details
+    aesthetic: str      # flashy, minimal, vintage, streetwear, etc.
+    color_theme: str    # dark, light, vibrant, pastel
+    color_hue: str      # exact hue description or primary color
+    fabric: str         # cotton, denim, leather, silk, synthetic, etc.
+    
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 sqlite_url = "sqlite:///app.db"
