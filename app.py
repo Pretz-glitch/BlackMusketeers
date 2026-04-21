@@ -1,9 +1,10 @@
 import streamlit as st
-st.set_page_config(page_title="Dress Classifier", page_icon="👗", layout="wide")
+st.set_page_config(page_title="Wardrobe System", layout="wide")
 
 import os
 import uuid
 import collections
+import random
 from PIL import Image
 from models import create_db_and_tables, engine, DressItem
 from ai_classifier import classify_dress
@@ -11,20 +12,12 @@ from sqlmodel import Session, select
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# Ensure DB is created
 create_db_and_tables()
 
-# Ensure uploads directory exists
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-class WardrobeCache:
-    """
-    LRU Cache implementation inspired by LeetCode 146
-    Saves the most recently queried wardrobe statistics 
-    to aviod recalculating stats unnecessarily.
-    """
+class LRUCache:
     def __init__(self, capacity: int):
         self.cache = collections.OrderedDict()
         self.capacity = capacity
@@ -42,191 +35,217 @@ class WardrobeCache:
         if len(self.cache) > self.capacity:
             self.cache.popitem(last=False)
 
-# Re-use cache for the whole session
 if 'stats_cache' not in st.session_state:
-    st.session_state.stats_cache = WardrobeCache(5)
+    st.session_state.stats_cache = LRUCache(5)
 
-st.title("👗 Dress Classifier & Wardrobe")
+st.title("Wardrobe System")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Upload & Classify", "My Wardrobe", "Outfit Matcher", "About (DSA Concepts)"])
+tab1, tab2, tab3, tab4 = st.tabs(["Upload Item", "My Wardrobe", "Outfit Builder", "About"])
 
 with tab1:
-    st.header("Upload or Snap a Dress Image")
+    st.header("Add to Wardrobe")
     
-    # Check for API key warning
     if not os.getenv("GEMINI_API_KEY"):
-        st.warning("⚠️ GEMINI_API_KEY is not set in the environment or .env file! Classification will fail.")
+        st.warning("API Key not found. Classification will fail.")
 
-    input_mode = st.radio("Choose Input Method", ["Upload File", "Take Photo"])
-    uploaded_file = None
+    input_mode = st.radio("Input Method", ["File Upload", "Camera"])
+    uploaded_file = st.file_uploader("Select Image") if input_mode == "File Upload" else st.camera_input("Take Photo")
     
-    if input_mode == "Upload File":
-        uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-    else:
-        uploaded_file = st.camera_input("Take a photo of the clothing item")
-    
-    if uploaded_file is not None:
+    if uploaded_file:
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.image(uploaded_file, caption="Image Preview", use_column_width=True)
+            st.image(uploaded_file, use_column_width=True)
             
         with col2:
-            if st.button("Classify and Save", type="primary"):
-                with st.spinner("Analyzing image..."):
-                    # Save image locally securely using a unique UUID
-                    unique_filename = f"{uuid.uuid4().hex}_{uploaded_file.name}"
-                    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+            if st.button("Process and Save", type="primary"):
+                with st.spinner("Processing..."):
+                    file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}_{uploaded_file.name}")
                     with open(file_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
                     
-                    # Classify using AI
-                    classification = classify_dress(file_path)
+                    c = classify_dress(file_path)
                     
-                    if classification.get("season") == "Unknown" and classification.get("style") == "Unknown":
-                        st.error(f"Classification failed. \nError Message: {classification.get('error_msg', 'Unknown Error')}\nPlease try again or check your API key/billing constraints.")
+                    if c.get("season") == "Unknown" and c.get("style") == "Unknown":
+                        st.error(f"Failed to parse tags. Check API limits. Error: {c.get('error_msg')}")
                     else:
-                        st.success("Successfully classified!")
-                        st.write("**Season:**", classification["season"])
-                        st.write("**Style:**", classification["style"])
-                        st.write("**Color:**", classification["color"])
+                        st.success("Item saved successfully.")
+                        st.write("Type:", c["clothing_type"])
+                        st.write("Style:", c["style"])
+                        st.write("Season:", c["season"])
+                        st.write("Aesthetic:", c["aesthetic"])
+                        st.write("Theme:", c["color_theme"], "| Hue:", c["color_hue"])
+                        st.write("Fabric:", c["fabric"])
                         
-                        # Save to database
-                        dress_item = DressItem(
+                        item = DressItem(
                             filename=uploaded_file.name,
                             image_path=file_path,
-                            season=classification["season"],
-                            style=classification["style"],
-                            color=classification["color"]
+                            clothing_type=c["clothing_type"].title(),
+                            season=c["season"].title(),
+                            style=c["style"].title(),
+                            aesthetic=c["aesthetic"].title(),
+                            color_theme=c["color_theme"].title(),
+                            color_hue=c["color_hue"].title(),
+                            fabric=c["fabric"].title()
                         )
                         
                         with Session(engine) as session:
-                            session.add(dress_item)
+                            session.add(item)
                             session.commit()
                             
-                        # Invalidate the cache by adding a new default key, we will re-run our grouping next time
                         st.session_state.stats_cache.put(-1, None)
-                        st.toast("Saved to Wardrobe!")
 
 with tab2:
-    st.header("My Wardrobe Collection")
+    st.header("Inventory Overview")
     
     with Session(engine) as session:
         items = session.exec(select(DressItem).order_by(DressItem.created_at.desc())).all()
     
     if not items:
-        st.info("No items in your wardrobe yet. Go upload some!")
+        st.info("Inventory is empty.")
     else:
-        # Dictionary grouping algorithm inspired by LeetCode 49 (Group Anagrams)
-        # We group our items by Season. We use cache to not re-compute unless invalidated.
-        cached_stats = st.session_state.stats_cache.get(len(items))
-        if not cached_stats:
-            season_groups = collections.defaultdict(list)
-            for item in items:
-                season_groups[item.season].append(item)
-            st.session_state.stats_cache.put(len(items), season_groups)
-        else:
-            season_groups = cached_stats
-            
-        st.subheader("Filter by Season")
-        selected_season = st.selectbox("Season", ["All"] + list(season_groups.keys()))
+        # PCPartPicker style filtering
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            f_search = st.text_input("Fuzzy Search (Tags, Terms, Keywords, Colors)")
         
-        display_items = items if selected_season == "All" else season_groups[selected_season]
-
-        # Display items in a grid layout (4 columns)
-        cols = st.columns(4)
-        for index, item in enumerate(display_items):
-            col = cols[index % 4]
-            with col:
-                st.container(border=True)
-                try:
-                    img = Image.open(item.image_path)
-                    st.image(img, use_column_width=True)
-                except Exception:
-                    st.warning("Image file missing")
+        col_f_a, col_f_b, col_f_c, col_f_d = st.columns(4)
+        
+        types = ["All"] + sorted(list(set([i.clothing_type for i in items])))
+        styles = ["All"] + sorted(list(set([i.style for i in items])))
+        seasons = ["All"] + sorted(list(set([i.season for i in items])))
+        aesthetics = ["All"] + sorted(list(set([i.aesthetic for i in items])))
+        
+        with col_f_a: f_type = st.selectbox("Category", types)
+        with col_f_b: f_style = st.selectbox("Style", styles)
+        with col_f_c: f_season = st.selectbox("Season", seasons)
+        with col_f_d: f_aesthetic = st.selectbox("Aesthetic", aesthetics)
+        
+        display_items = []
+        for i in items:
+            match = True
+            if f_type != "All" and i.clothing_type != f_type: match = False
+            if f_style != "All" and i.style != f_style: match = False
+            if f_season != "All" and i.season != f_season: match = False
+            if f_aesthetic != "All" and i.aesthetic != f_aesthetic: match = False
+            
+            # Fuzzy match check
+            if f_search:
+                q = f_search.lower()
+                blob = f"{i.clothing_type} {i.season} {i.style} {i.aesthetic} {i.color_theme} {i.color_hue} {i.fabric}".lower()
+                if not all(term in blob for term in q.split()):
+                    match = False
                     
-                st.markdown(f"**Season:** {item.season}")
-                st.markdown(f"**Style:** {item.style}")
-                st.markdown(f"**Color:** {item.color}")
-                st.caption(f"Added: {item.created_at.strftime('%Y-%m-%d')}")
+            if match:
+                display_items.append(i)
+                
+        st.subheader(f"Results ({len(display_items)} items)")
+        st.divider()
+        
+        cols = st.columns(4)
+        for idx, item in enumerate(display_items):
+            with cols[idx % 4]:
+                with st.container(border=True):
+                    try:
+                        img = Image.open(item.image_path)
+                        st.image(img, use_column_width=True)
+                    except Exception:
+                        st.warning("Missing media")
+                    st.markdown(f"**{item.color_hue} {item.clothing_type}**")
+                    st.caption(f"{item.fabric} | {item.aesthetic} | {item.style}")
+                    if st.button("Delete", key=f"delete_{item.id}"):
+                        with Session(engine) as d_session:
+                            item_to_delete = d_session.get(DressItem, item.id)
+                            if item_to_delete:
+                                d_session.delete(item_to_delete)
+                                d_session.commit()
+                                try:
+                                    if os.path.exists(item_to_delete.image_path):
+                                        os.remove(item_to_delete.image_path)
+                                except Exception:
+                                    pass
+                                st.rerun()
 
 with tab3:
-    st.header("✨ Outfit Matcher")
-    st.write("Need something specific? Describe your desired look and we'll rank the best matches from your wardrobe using text correlation!")
+    st.header("Outfit Builder")
+    st.write("Construct outfits manually or click randomize to generate combinations.")
     
-    search_query = st.text_input("What are you looking for? (e.g., 'summer casual pink', 'formal black winter dress')")
-    
-    if search_query:
-        with Session(engine) as session:
-            items = session.exec(select(DressItem)).all()
+    with Session(engine) as session:
+        all_inv = session.exec(select(DressItem)).all()
+        
+    if not all_inv:
+         st.info("No items found to build an outfit.")
+    else:
+        # Group logic
+        tops = [i for i in all_inv if i.clothing_type.lower() == "top"]
+        bottoms = [i for i in all_inv if i.clothing_type.lower() == "bottom"]
+        fulls = [i for i in all_inv if i.clothing_type.lower() == "full"]
+        footwear = [i for i in all_inv if i.clothing_type.lower() == "footwear"]
+        accessories = [i for i in all_inv if i.clothing_type.lower() == "accessory"]
+        
+        col_ctrl1, col_ctrl2 = st.columns(2)
+        with col_ctrl1:
+            generator_type = st.radio("Outfit Type", ["Separates", "Full Body"])
+        with col_ctrl2:
+             if st.button("RANDOMIZE OUTFIT", type="primary"):
+                 st.session_state.r_top = random.choice(tops) if tops else None
+                 st.session_state.r_bottom = random.choice(bottoms) if bottoms else None
+                 st.session_state.r_full = random.choice(fulls) if fulls else None
+                 st.session_state.r_foot = random.choice(footwear) if footwear else None
+                 st.session_state.r_acc = random.choice(accessories) if accessories else None
+
+        st.subheader("Current Loadout")
+        
+        def dict_options(group):
+            d = {"None": None}
+            d.update({f"[{g.id}] {g.color_hue} {g.style}": g for g in group})
+            return d
             
-        if not items:
-            st.info("Your wardrobe is empty. Head to the 'Upload & Classify' tab to add some items!")
-        else:
-            # Tokenize the query
-            import string
-            # Remove punctuation and split to words
-            query_words = set(search_query.lower().translate(str.maketrans('', '', string.punctuation)).split())
-            
-            scored_items = []
-            for item in items:
-                score = 0
-                # Attribute tokenization (in case multi-word attributes)
-                item_tokens = set()
-                item_tokens.update(item.season.lower().split())
-                item_tokens.update(item.style.lower().split())
-                item_tokens.update(item.color.lower().split())
-                
-                # Calculate Intersection Size
-                matches = query_words.intersection(item_tokens)
-                score = len(matches)
-                
-                if score > 0:
-                    scored_items.append((score, item))
-            
-            # Sort by score descending (highest relevance first)
-            scored_items.sort(key=lambda x: x[0], reverse=True)
-            
-            st.subheader(f"Found {len(scored_items)} matches for '{search_query}'")
-            if not scored_items:
-                st.warning("No matches found. Try entering different attributes.")
+        t_opts = dict_options(tops)
+        b_opts = dict_options(bottoms)
+        f_opts = dict_options(fulls)
+        s_opts = dict_options(footwear)
+        a_opts = dict_options(accessories)
+        
+        s_c1, s_c2, s_c3, s_c4 = st.columns(4)
+
+        with s_c1:
+            if generator_type == "Separates":
+                sel_t = st.selectbox("Slot: Top", list(t_opts.keys()))
+                t_item = st.session_state.get("r_top") if st.session_state.get("r_top") and sel_t == "None" else t_opts[sel_t]
+                if t_item:
+                    st.image(Image.open(t_item.image_path), use_column_width=True)
+                    st.caption(f"{t_item.color_hue} {t_item.fabric}")
             else:
-                cols = st.columns(4)
-                for index, (score, item) in enumerate(scored_items):
-                    col = cols[index % 4]
-                    with col:
-                        st.container(border=True)
-                        try:
-                            img = Image.open(item.image_path)
-                            st.image(img, use_column_width=True)
-                        except Exception:
-                            st.warning("Image file missing")
-                            
-                        # Show match strength visually
-                        fire_emojis = "🔥" * score
-                        st.markdown(f"**Match:** {fire_emojis}")
-                        st.markdown(f"**Season:** {item.season}")
-                        st.markdown(f"**Style:** {item.style}")
-                        st.markdown(f"**Color:** {item.color}")
+                sel_f = st.selectbox("Slot: Full Body", list(f_opts.keys()))
+                f_item = st.session_state.get("r_full") if st.session_state.get("r_full") and sel_f == "None" else f_opts[sel_f]
+                if f_item:
+                    st.image(Image.open(f_item.image_path), use_column_width=True)
+                    st.caption(f"{f_item.color_hue} {f_item.fabric}")
+                    
+        with s_c2:
+            if generator_type == "Separates":
+                sel_b = st.selectbox("Slot: Bottom", list(b_opts.keys()))
+                b_item = st.session_state.get("r_bottom") if st.session_state.get("r_bottom") and sel_b == "None" else b_opts[sel_b]
+                if b_item:
+                    st.image(Image.open(b_item.image_path), use_column_width=True)
+                    st.caption(f"{b_item.color_hue} {b_item.fabric}")
+
+        with s_c3:
+            sel_s = st.selectbox("Slot: Footwear", list(s_opts.keys()))
+            s_item = st.session_state.get("r_foot") if st.session_state.get("r_foot") and sel_s == "None" else s_opts[sel_s]
+            if s_item:
+                st.image(Image.open(s_item.image_path), use_column_width=True)
+                st.caption(f"{s_item.color_hue} {s_item.fabric}")
+                
+        with s_c4:
+            sel_a = st.selectbox("Slot: Accessory", list(a_opts.keys()))
+            a_item = st.session_state.get("r_acc") if st.session_state.get("r_acc") and sel_a == "None" else a_opts[sel_a]
+            if a_item:
+                st.image(Image.open(a_item.image_path), use_column_width=True)
+                st.caption(f"{a_item.color_hue} {a_item.fabric}")
 
 with tab4:
-    st.header("📚 About: DSA Concepts Inside")
-    st.markdown('''
-This project is built using modern full-stack methodologies and applies pure Data Structures and Algorithms (DSA). Below are the DSA concepts integrated into this app.
-
-### 1. Set Intersection & Priority Sorting (Information Retrieval)
-- **Inspired By**: [LeetCode 349: Intersection of Two Arrays](https://leetcode.com/problems/intersection-of-two-arrays/) & Search Engine algorithms.
-- **Usage Here**: In the "Outfit Matcher" tab, when you search for "summer casual", the system tokenizes your query into an $O(1)$ lookup Hash Set. It then computes the exact matching overlap with the attributes of every wardrobe item $O(M)$ where $M$ is token size. Finally, it uses Python's `sort()` (Timsort, $O(N \log N)$) to rank the items by priority score (`score = len(matches)`) strictly rendering the most relevant options first.
-
-### 2. LRU Cache (Least Recently Used)
-- **Inspired By**: [LeetCode 146: LRU Cache](https://leetcode.com/problems/lru-cache/)
-- **Usage Here**: When computing the grouped wardrobe statistics and aggregations (e.g. gathering all Summer clothes vs. Winter clothes), iterating over the database items could be slow at a large scale. The `WardrobeCache` class utilizes Python's `collections.OrderedDict` to maintain an $O(1)$ time complexity for fetching and invalidating the most recent computations based on the total clothes count. 
-    
-### 2. Grouping by Hash Map
-- **Inspired By**: [LeetCode 49: Group Anagrams](https://leetcode.com/problems/group-anagrams/)
-- **Usage Here**: In the "My Wardrobe" tab, when filtering clothes by season, the application parses the 1D list of SQL models and groups the strings into a `collections.defaultdict(list)`. This $O(N)$ algorithm effectively organizes the dataset under hash keys (`Summer`, `Winter`, etc.) mapped to lists of elements.
-
-### 3. $O(1)$ Array Indexing via Modulo
-- **Inspired By**: Basic Array Manipulation and Circular Buffers.
-- **Usage Here**: Streamlit’s column layout renders elements sequentially by accessing static columns utilizing the modulo operator (`col = cols[index % 4]`). This allows an unbounded collection of elements to wrap dynamically across fixed 4 columns at run-time without requiring nested iterative grouping logic.
-    ''')
+    st.header("About")
+    st.write("Application utilizes SQLModel for database modeling, handling multiple attribute vectors per item.")
+    st.write("The Outfit Builder mirrors RPG-style loadout architectures allowing slot-based generation and manual overrides.")
+    st.write("Search algorithms utilize continuous subset array matching for fuzzy criteria resolution.")
